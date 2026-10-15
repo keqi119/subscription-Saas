@@ -1,0 +1,69 @@
+<view class="page bottom-space"
+  ><demo-banner /><view class="eyebrow">MILEAGE / 月度里程</view
+  ><view class="title">记录走过的路。</view
+  ><view wx:if="{{loading}}" class="empty">正在读取里程信息…</view
+  ><view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button
+    ><button class="text-button" bindtap="openUse">返回用车</button></view
+  ><view wx:elif="{{submitted}}" class="card"
+    ><view class="tag">仅本地演示</view><view class="section-title">里程复核记录已保存</view
+    ><view class="muted">本次录入不代表后台已审核，也不会自动生成费用。</view
+    ><button class="primary" bindtap="openRecord">查看记录</button></view
+  ><view wx:elif="{{!subscription}}" class="empty"
+    ><view class="section-title">暂无可复核里程的订阅</view
+    ><button class="secondary" bindtap="openUse">返回用车</button></view
+  ><block wx:else
+    ><view class="card"
+      ><view class="label">{{subscription.vehicleName}} · 最近确认里程</view
+      ><view class="price">{{subscription.mileageText || '待确认'}}</view></view
+    ><view class="notice"
+      >填写当前仪表盘的累计公里数。记录需经审核；异常读数不会直接改变已确认里程。</view
+    ><view class="card"
+      ><view class="field"
+        ><view class="label">累计里程（km）</view
+        ><input
+          class="input reading-input"
+          type="number"
+          value="{{reading}}"
+          maxlength="7"
+          placeholder="输入当前读数"
+          data-field="reading"
+          bindinput="input"
+          disabled="{{busy}}" /></view
+      ><view class="field"
+        ><view class="label">补充说明（选填）</view
+        ><textarea
+          class="textarea"
+          value="{{comment}}"
+          placeholder="例如仪表更换或其他需说明的情况"
+          maxlength="300"
+          data-field="comment"
+          bindinput="input"
+          disabled="{{busy}}"
+        /></view></view
+    ><view class="card"
+      ><view class="section-title">仪表盘凭证</view
+      ><view class="muted"
+        >至少添加 1 张。最多 4 张，每张不超过 20 MB；仅保存本地元数据，未上传图片。</view
+      ><view wx:for="{{attachments}}" wx:key="index" class="attachment-row"
+        ><text>{{item.name}} · 未上传</text
+        ><button
+          class="text-button"
+          data-index="{{index}}"
+          bindtap="removeAttachment"
+          disabled="{{busy}}"
+          >移除</button
+        ></view
+      ><button
+        wx:if="{{attachments.length < 4}}"
+        class="secondary"
+        bindtap="chooseAttachments"
+        loading="{{choosing}}"
+        disabled="{{busy || choosing}}"
+        >添加本地凭证</button
+      ></view
+    ><button class="primary" bindtap="submit" loading="{{busy}}" disabled="{{busy || choosing}}"
+      >保存演示里程记录</button
+    ></block
+  ></view
+>

@@ -1,0 +1,36 @@
+<view class="page">
+  <demo-banner />
+  <view class="eyebrow">YOUR RECORDS / 记录</view>
+  <view class="title">{{title}}</view>
+  <view wx:if="{{loading}}" class="empty">正在读取记录…</view>
+  <view wx:elif="{{error}}" class="empty">
+    <view>{{error}}</view>
+    <button class="secondary" bindtap="reload">重新加载</button>
+    <button class="text-button" bindtap="openMine">返回我的</button>
+  </view>
+  <view wx:elif="{{!items.length}}" class="empty">
+    <view class="section-title">暂无{{title}}</view>
+    <view class="muted">相关业务发生后，记录会出现在这里。</view>
+    <button class="secondary" bindtap="openMine">返回我的</button>
+  </view>
+  <block wx:else>
+    <view class="muted record-count">共 {{items.length}} 条 · 本地演示数据</view>
+    <button
+      wx:for="{{items}}"
+      wx:key="id"
+      class="record-card"
+      data-id="{{item.id}}"
+      bindtap="openRecord"
+    >
+      <view class="row between">
+        <view class="record-title">{{item.title}}</view>
+        <text class="tag">{{item.statusText}}</text>
+      </view>
+      <view class="muted record-subtitle">{{item.subtitle}}</view>
+      <view class="row between">
+        <text wx:if="{{item.amountText}}" class="record-amount">{{item.amountText}}</text>
+        <text class="record-link">查看详情 →</text>
+      </view>
+    </button>
+  </block>
+</view>

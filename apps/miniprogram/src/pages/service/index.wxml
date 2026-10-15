@@ -1,0 +1,75 @@
+<view class="page bottom-space"
+  ><demo-banner /><view class="eyebrow">CARE / 用车服务</view><view class="title">{{title}}</view
+  ><view wx:if="{{loading}}" class="empty">正在读取当前车辆…</view
+  ><view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button
+    ><button class="text-button" bindtap="openUse">返回用车</button></view
+  ><view wx:elif="{{submitted}}" class="card"
+    ><view class="tag">仅本地演示</view><view class="section-title">已保存服务记录</view
+    ><view class="muted">没有联系服务商、派车或上传附件。此页面无法处理真实紧急请求。</view
+    ><button class="primary" bindtap="openRecord">查看记录</button></view
+  ><view wx:elif="{{!subscription}}" class="empty"
+    ><view class="section-title">暂无可办理服务的订阅</view
+    ><view class="muted">可在演示设置中切换“用车中”查看完整表单。</view
+    ><button class="secondary" bindtap="openUse">返回用车</button></view
+  ><block wx:else
+    ><view class="notice"
+      >仅演示记录，不会通知救援或事故处理人员。如有真实紧急情况，请使用当地紧急求助渠道。</view
+    ><view class="card"
+      ><view class="label">当前车辆</view><view>{{subscription.vehicleName}}</view
+      ><view class="divider" /><view class="field"
+        ><view class="label">具体位置</view
+        ><input
+          class="input"
+          value="{{location}}"
+          placeholder="道路、方向、附近地标（示例）"
+          maxlength="120"
+          data-field="location"
+          bindinput="input"
+          disabled="{{busy}}" /></view
+      ><view class="field"
+        ><view class="label">情况描述</view
+        ><textarea
+          class="textarea"
+          value="{{description}}"
+          placeholder="请描述车辆情况和需要的帮助"
+          maxlength="500"
+          data-field="description"
+          bindinput="input"
+          disabled="{{busy}}"
+        /></view
+      ><view class="field"
+        ><view class="label">示例联系电话</view
+        ><input
+          class="input"
+          type="number"
+          value="{{mobile}}"
+          maxlength="11"
+          data-field="mobile"
+          bindinput="input"
+          disabled="{{busy}}" /></view></view
+    ><view class="card"
+      ><view class="section-title">现场附件（选填）</view
+      ><view class="muted">最多 4 张，每张不超过 20 MB。仅记录本地附件元数据，图片不会上传。</view
+      ><view wx:for="{{attachments}}" wx:key="index" class="attachment-row"
+        ><text>{{item.name}} · 未上传</text
+        ><button
+          class="text-button"
+          data-index="{{index}}"
+          bindtap="removeAttachment"
+          disabled="{{busy}}"
+          >移除</button
+        ></view
+      ><button
+        wx:if="{{attachments.length < 4}}"
+        class="secondary"
+        bindtap="chooseAttachments"
+        loading="{{choosing}}"
+        disabled="{{busy || choosing}}"
+        >添加本地图片</button
+      ></view
+    ><button class="primary" bindtap="submit" loading="{{busy}}" disabled="{{busy || choosing}}"
+      >保存演示{{title}}</button
+    ></block
+  ></view
+>

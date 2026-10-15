@@ -1,0 +1,188 @@
+.vehicle-hero {
+  position: relative;
+  height: 340rpx;
+  background: #e6e8df;
+  margin: 26rpx -40rpx 0;
+}
+.vehicle-hero image {
+  width: 100%;
+  height: 100%;
+}
+.vehicle-status {
+  position: absolute;
+  left: 40rpx;
+  top: 24rpx;
+  background: #f6f6ef;
+  font-size: 22rpx;
+  padding: 8rpx 16rpx;
+}
+.missing-photo {
+  padding-top: 145rpx;
+  color: #727669;
+  text-align: center;
+  font-size: 26rpx;
+}
+.vehicle-intro {
+  padding: 36rpx 0;
+}
+.vehicle-intro .title {
+  margin: 16rpx 0;
+}
+.facts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1rpx solid #d5d8ce;
+  border-bottom: 1rpx solid #d5d8ce;
+  padding: 26rpx 0;
+  gap: 30rpx;
+}
+.fact-value,
+.fact-label {
+  display: block;
+}
+.fact-value {
+  font-size: 29rpx;
+  font-weight: 550;
+  line-height: 1.5;
+}
+.fact-label {
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  color: #767b6e;
+}
+.report-section {
+  border-bottom: 1rpx solid #d5d8ce;
+}
+.disclosure {
+  width: 100%;
+  background: transparent;
+  font-size: 27rpx;
+  line-height: 1.6;
+  text-align: left;
+  padding: 26rpx 0;
+  border-radius: 0;
+}
+.disclosure::after {
+  border: 0;
+}
+.report-content {
+  font-size: 26rpx;
+  line-height: 1.7;
+  padding-bottom: 26rpx;
+}
+.detail-row {
+  gap: 28rpx;
+  padding: 18rpx 0;
+  font-size: 26rpx;
+  align-items: flex-start;
+  line-height: 1.6;
+}
+.detail-row > text:last-child {
+  text-align: right;
+  max-width: 67%;
+}
+.availability-note {
+  margin-top: 28rpx;
+}
+.plans-heading {
+  margin: 52rpx 0 28rpx;
+}
+.plans-heading .section-title {
+  margin: 14rpx 0;
+}
+.plan-card {
+  margin: 0 0 18rpx;
+  padding: 28rpx;
+  border: 1rpx solid #cdd1c4;
+  border-radius: 4rpx;
+  background: #fbfaf7;
+  text-align: left;
+  line-height: 1.5;
+  white-space: normal;
+}
+.plan-card::after {
+  border: 0;
+}
+.plan-card.selected {
+  border: 2rpx solid #b44919;
+  background: #f6f0e7;
+  padding: 27rpx;
+}
+.plan-card.disabled-plan {
+  color: #85897e;
+  background: #eeefe8;
+}
+.plan-title {
+  font-size: 29rpx;
+  font-weight: 600;
+}
+.selection-mark {
+  font-size: 21rpx;
+  color: #757b6d;
+  flex-shrink: 0;
+  margin-left: 16rpx;
+}
+.selected .selection-mark {
+  color: #b44919;
+}
+.plan-term {
+  font-size: 24rpx;
+  color: #6e7466;
+  margin-top: 12rpx;
+}
+.plan-price {
+  font-size: 33rpx;
+  font-variant-numeric: tabular-nums;
+  margin-top: 22rpx;
+}
+.plan-price .muted {
+  font-size: 23rpx;
+}
+.fee-section {
+  margin-top: 44rpx;
+}
+.fee-section > .section-title {
+  margin-bottom: 20rpx;
+}
+.benefit {
+  display: flex;
+  gap: 16rpx;
+  font-size: 26rpx;
+  line-height: 1.7;
+  padding: 12rpx 0;
+}
+.benefit-check {
+  color: #5e7055;
+}
+.fee-total {
+  border-top: 1rpx solid #d5d8ce;
+  padding-top: 28rpx;
+  margin-top: 26rpx;
+}
+.small-note {
+  font-size: 23rpx;
+  line-height: 1.8;
+}
+.conditions {
+  font-size: 26rpx;
+  line-height: 1.8;
+  padding-bottom: 22rpx;
+}
+.conditions .muted {
+  margin-top: 16rpx;
+}
+.application-note {
+  margin: 32rpx 0;
+}
+.action-price {
+  padding-bottom: 16rpx;
+}
+.vehicle-page {
+  padding-bottom: 300rpx;
+}
+.report-images image {
+  width: 100%;
+  display: block;
+  margin: 18rpx 0;
+  background: #e9ebe2;
+}

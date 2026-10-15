@@ -1,0 +1,1 @@
+{ "desc": "本地前端开发，不开放搜索索引", "rules": [{ "action": "disallow", "page": "*" }] }

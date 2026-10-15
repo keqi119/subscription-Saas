@@ -1,0 +1,102 @@
+<view class="page home-page">
+  <demo-banner />
+  <view class="brand-line row between"
+    ><text class="brand">纯电主义</text><text class="city">上海 · 二手纯电</text></view
+  >
+  <view wx:if="{{loading}}" class="empty" role="status">正在准备你的首页…</view>
+  <view wx:elif="{{error}}" class="empty"
+    ><text>{{error}}</text><button class="secondary" bindtap="refresh">重新加载</button></view
+  >
+  <block wx:else>
+    <view wx:if="{{nextAction}}" class="next-card">
+      <view class="eyebrow">你的下一步</view>
+      <view class="section-title">{{nextAction.title}}</view>
+      <view class="muted">{{nextAction.description}}</view>
+      <button wx:if="{{nextAction.url}}" class="primary" bindtap="openNext"
+        >{{nextAction.label || '查看详情'}} <text>↗</text></button
+      >
+    </view>
+    <view class="hero">
+      <view class="eyebrow">ELECTRIC. SIMPLY.</view>
+      <view class="hero-title"><view>用车，</view><view>回归简单。</view></view>
+      <view class="hero-copy"
+        ><view>找到适合日常的纯电车。</view><view>选定预设套餐，按月订阅。</view></view
+      >
+      <button class="primary hero-button" bindtap="openCatalog"
+        >查看可订阅车辆 <text>↗</text></button
+      >
+      <view class="hero-caption">申请后审核 · 最终方案确认后进入订单流程</view>
+    </view>
+    <view class="section-heading row between"
+      ><view class="section-title">适合每一天</view
+      ><button class="text-button" bindtap="openCatalog">全部车辆 →</button></view
+    >
+    <view wx:if="{{!vehicles.length}}" class="empty"
+      ><view>车辆正在准备中</view><view class="muted">稍后回来，或进入选车页查看。</view
+      ><button class="secondary" bindtap="openCatalog">进入选车</button></view
+    >
+    <view
+      wx:for="{{vehicles}}"
+      wx:key="id"
+      class="vehicle-preview"
+      bindtap="openVehicle"
+      data-id="{{item.id}}"
+      role="button"
+      aria-label="查看{{item.name}}"
+    >
+      <view class="photo-surface"
+        ><image
+          wx:if="{{item.imageUrl}}"
+          class="vehicle-image"
+          src="{{item.imageUrl}}"
+          mode="aspectFit"
+        /><view wx:else class="missing-photo">车辆图片待补充</view
+        ><text class="photo-status">{{item.statusText}}</text></view
+      >
+      <view class="preview-body"
+        ><view class="row between"
+          ><view class="vehicle-name">{{item.name}}</view><text>↗</text></view
+        ><view class="muted vehicle-meta">{{item.registrationText}} · {{item.mileageText}}</view
+        ><view class="row between price-row"
+          ><view
+            ><text class="price">{{item.minFeeText}}</text><text class="muted"> / 月起</text></view
+          ><text class="muted">{{item.city}}</text></view
+        ><view class="price-caption">起价对应可售预设套餐，具体期限与条件见详情。</view></view
+      >
+    </view>
+    <view class="process"
+      ><view class="eyebrow">HOW IT WORKS</view><view class="section-title">四步，开始新的日常</view
+      ><view class="step"
+        ><text class="step-number">01</text
+        ><view
+          ><view>选择车辆与套餐</view><view class="muted">先看清月费、里程与使用条件。</view></view
+        ></view
+      ><view class="step"
+        ><text class="step-number">02</text
+        ><view
+          ><view>提交申请，等待审核</view><view class="muted">意向申请不等于正式订单。</view></view
+        ></view
+      ><view class="step"
+        ><text class="step-number">03</text
+        ><view
+          ><view>确认方案，再办理签付</view
+          ><view class="muted">金额与押金以最终确认方案为准。</view></view
+        ></view
+      ><view class="step"
+        ><text class="step-number">04</text
+        ><view
+          ><view>完成交接，开始用车</view
+          ><view class="muted">交付安排以审核及实际确认结果为准。</view></view
+        ></view
+      ></view
+    >
+    <view class="faq"
+      ><button class="faq-trigger row between" bindtap="toggleFaq" aria-expanded="{{faqOpen}}"
+        ><text>月费之外，还需要了解什么？</text><text>{{faqOpen ? '−' : '+'}}</text></button
+      ><view wx:if="{{faqOpen}}" class="faq-content muted"
+        >每个预设套餐都有对应期限、包含里程和权益。押金待审核确认；超里程、违章、损坏、提前退出等可能另计。申请前请查看套餐说明，最终以确认方案、合同及真实账单为准。</view
+      ></view
+    >
+    <view class="footer-note">清楚的条件。恰好的选择。</view>
+  </block>
+</view>

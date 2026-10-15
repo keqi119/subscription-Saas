@@ -1,0 +1,42 @@
+<view class="page"
+  ><demo-banner /><view class="eyebrow">DEMO / 演示设置</view
+  ><view class="title">换一个阶段看看。</view
+  ><view wx:if="{{error}}" class="notice"
+    ><view>{{error}}</view><button class="secondary" bindtap="refresh">重试读取设置</button></view
+  ><view class="notice"
+    >{{mode === 'mock' ? '所有更改仅影响本机演示。切换场景用于检查不同客户阶段的页面与流程。' :
+    '当前为 API 模式，无法切换或重置本地演示。需要在工程配置中启用 Mock。'}}</view
+  ><view class="section-title setting-heading">客户阶段</view
+  ><button
+    wx:for="{{scenarios}}"
+    wx:key="id"
+    class="scenario-option {{scenario === item.id ? 'selected' : ''}}"
+    data-id="{{item.id}}"
+    bindtap="changeScenario"
+    disabled="{{busy || mode !== 'mock'}}"
+    ><view class="row between"
+      ><text>{{item.title}}</text><text>{{scenario === item.id ? '● 已选' : '○'}}</text></view
+    ><view class="muted">{{item.description}}</view></button
+  ><view class="section-title setting-heading">数据状态</view
+  ><view class="fault-options"
+    ><button
+      wx:for="{{faults}}"
+      wx:key="id"
+      class="fault-option {{fault === item.id ? 'selected' : ''}}"
+      data-id="{{item.id}}"
+      bindtap="changeFault"
+      disabled="{{busy || mode !== 'mock'}}"
+      >{{fault === item.id ? '● ' : ''}}{{item.title}}</button
+    ></view
+  ><view class="muted fault-help"
+    >失败模式会显示重试入口；回到这里选择“正常”即可恢复。设置页本身不受模拟故障影响。</view
+  ><view wx:if="{{message}}" class="notice">{{message}}</view
+  ><button class="primary return-home" bindtap="openHome" disabled="{{busy}}">返回首页体验</button
+  ><button
+    class="secondary reset"
+    bindtap="reset"
+    loading="{{busy}}"
+    disabled="{{busy || mode !== 'mock'}}"
+    >清空并重置本地演示</button
+  ></view
+>

@@ -417,7 +417,7 @@ test("all eight approved historical identities select pinned catalog descriptors
       "bfe57da0fe69bd47162e3281186dfa0c3b8c57bdca944b97cf558317b6934fd2",
       "fae0fffbdeb9d792181a705cf32ba264305928941e5b867c20635a4e6d656cb8",
       "065afd61c7f2454be5eff3a3c27fc0eafdb13c3316972cbcec143fcc123ed569",
-      "83e468c86b4f4eefd66f9076f346606fcd261be9de553c344fca06dd4a58781f"
+      "0c5ba9cace38336b6ffb80c4d4d9e9de6a6ca71c91129f5a7a6a2205fca60280"
     ]
   ];
   for (const [policy, sourceSha, proof, material, spec, admission, catalog] of rows) {

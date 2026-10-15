@@ -13,6 +13,10 @@ import {
 } from "../src/index.mjs";
 import * as historicalCatalogs from "../src/catalogs.mjs";
 import { sha256Bytes } from "../src/digest.mjs";
+import {
+  APPROVED_R3_INCIDENT_B7A1429C,
+  approvedR3HistoricalContractCompatibility
+} from "../src/manual-r3-incident.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -237,6 +241,72 @@ test("historical repository discovery uses only a pinned literal old entrypoint 
     await assert.rejects(historicalCatalogs.computeHistoricalRepositoryContract(root, input), {
       code: "CONTRACT_FILE_SET_DRIFT"
     });
+  });
+});
+
+test("1c historical compatibility authenticates its original catalog bytes", async () => {
+  // Exact bytes from Git object 1c8ecfdc52c46fa1c6ead634fe2c6eaa1b664825:
+  // packages/release-foundation/src/catalogs.mjs; SHA-256 independently
+  // confirmed against the clean installed H1 source checkout.
+  const catalogBytes = await readFile(
+    new URL("./fixtures/r3-catalogs-1c8ecfd.mjs.txt", import.meta.url)
+  );
+  assert.equal(
+    sha256Bytes(catalogBytes),
+    "sha256:0c5ba9cace38336b6ffb80c4d4d9e9de6a6ca71c91129f5a7a6a2205fca60280"
+  );
+  const old = APPROVED_R3_INCIDENT_B7A1429C;
+  const compatibility = approvedR3HistoricalContractCompatibility({
+    operationRef: old.operationRef,
+    profileDigest: old.profileDigest,
+    sourceSha: old.lockScope.sourceSha,
+    proofRawDigest: "sha256:24191b964fff0a79c8b9a5553279b6230e6f78b29597d8bdb1950e7a0a8f0287",
+    materialRawDigest: "sha256:bfe57da0fe69bd47162e3281186dfa0c3b8c57bdca944b97cf558317b6934fd2",
+    creationSpecDigest: old.lockScope.creationSpecDigest,
+    jobAdmissionDigest: old.lockScope.jobAdmissionDigest
+  });
+  assert.ok(compatibility);
+  await withTempRepo(async (root) => {
+    await writeRepositoryContractFixture(root, [
+      "release/contracts/repository-contract-files.v1.json",
+      "release/contracts/schemas/example.json"
+    ]);
+    const contract = await historicalCatalogs.computeHistoricalRepositoryContract(root, {
+      catalogBytes,
+      catalogRawDigest: compatibility.catalogRawDigest
+    });
+    assert.equal(contract.entries.length, 2);
+    const tampered = Buffer.from(catalogBytes);
+    tampered[0] ^= 1;
+    await assert.rejects(
+      historicalCatalogs.computeHistoricalRepositoryContract(root, {
+        catalogBytes: tampered,
+        catalogRawDigest: compatibility.catalogRawDigest
+      }),
+      { code: "CONTRACT_HISTORICAL_CATALOG_CHANGED" }
+    );
+    const duplicated = Buffer.concat([
+      catalogBytes,
+      Buffer.from("\nconst RELEASE_GATE_ENTRY_POINTS = Object.freeze([]);\n")
+    ]);
+    await assert.rejects(
+      historicalCatalogs.computeHistoricalRepositoryContract(root, {
+        catalogBytes: duplicated,
+        catalogRawDigest: sha256Bytes(duplicated)
+      }),
+      { code: "CONTRACT_HISTORICAL_CATALOG_INVALID" }
+    );
+    const sameLineDuplicate = Buffer.concat([
+      catalogBytes,
+      Buffer.from("\n]); const RELEASE_GATE_ENTRY_POINTS = Object.freeze([]);\n")
+    ]);
+    await assert.rejects(
+      historicalCatalogs.computeHistoricalRepositoryContract(root, {
+        catalogBytes: sameLineDuplicate,
+        catalogRawDigest: sha256Bytes(sameLineDuplicate)
+      }),
+      { code: "CONTRACT_HISTORICAL_CATALOG_INVALID" }
+    );
   });
 });
 

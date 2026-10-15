@@ -325,10 +325,11 @@ function historicalEntryPoints(catalogBytes, catalogRawDigest) {
   } catch {
     throw invalid();
   }
-  const start = "const RELEASE_GATE_ENTRY_POINTS = Object.freeze([";
-  const first = source.indexOf(start);
-  if (first < 0 || source.indexOf(start, first + start.length) >= 0) throw invalid();
-  const begin = first + start.length;
+  const declarations = [
+    ...source.matchAll(/(?:^|[;}])[ \t]*const RELEASE_GATE_ENTRY_POINTS = Object\.freeze\(\[/gmu)
+  ];
+  if (declarations.length !== 1) throw invalid();
+  const begin = declarations[0].index + declarations[0][0].length;
   const end = source.indexOf("]);", begin);
   if (end < 0) throw invalid();
   const body = source.slice(begin, end);

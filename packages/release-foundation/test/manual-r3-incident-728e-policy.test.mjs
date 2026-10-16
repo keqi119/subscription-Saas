@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import * as incident from "../src/manual-r3-incident.mjs";
+import { sha256Bytes } from "../src/digest.mjs";
 
-test("728e created-target approval binds the exact 233d source and catalog", () => {
+test("728e created-target approval binds the exact 233d source and catalog", async () => {
   const p = incident.APPROVED_R3_INCIDENT_728EAFD7;
   assert.equal(p.operationRef, "728eafd7-f137-4d7f-a0ad-73b2a687e59b");
   assert.equal(p.incidentKind, "CREATED_TARGET_CANDIDATE_USE_UNCONSUMED");
@@ -33,9 +35,17 @@ test("728e created-target approval binds the exact 233d source and catalog", () 
   assert.deepEqual(incident.approvedR3HistoricalContractCompatibility(binding), {
     sourceRoot: "/opt/stage1-r3-candidate-233d237",
     sourceSha: "233d237227fbcbf5bb03efb068decca63dc6bca7",
-    catalogRawDigest: "sha256:1f761f27d1a8ee434f8fac5a8dd826aa47ec1420a2e1fc4923ba45355de0034a",
+    catalogRawDigest: "sha256:c34beff7b479440cc4390d679fb9073a854b2543f959ac64b4c5174f68823d3b",
     discoveryVersion: "r3-historical-entrypoints-literal.v1"
   });
+  // Original catalogs.mjs bytes from the 233d Git object, not its contract manifest.
+  const catalogBytes = await readFile(
+    new URL("./fixtures/r3-catalogs-233d237.mjs.txt", import.meta.url)
+  );
+  assert.equal(
+    incident.approvedR3HistoricalContractCompatibility(binding).catalogRawDigest,
+    sha256Bytes(catalogBytes)
+  );
   for (const changed of [
     { operationRef: "b7a1429c-ede5-4036-9091-078b766204ac" },
     { sourceSha: "119c6" },

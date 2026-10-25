@@ -110,6 +110,7 @@
     "prisma:seed:verify": "pnpm --filter @subscription-saas/api prisma:seed:verify",
     "prisma:validate": "pnpm --filter @subscription-saas/api prisma:validate",
     "release:contracts:test": "pnpm --filter @subscription-saas/release-foundation test",
+    "release:history:test": "node --experimental-test-module-mocks --test --test-name-pattern=\"approved failed R3 history\" packages/release-foundation/test/manual-stage1-session.test.mjs",
     "release:contracts:verify": "node scripts/release/verify-contracts.mjs",
     "release:database-tests:discover": "node scripts/release/discover-database-tests.mjs --mode verify",
     "release:database:suite": "node scripts/release/run-database-suite.mjs",

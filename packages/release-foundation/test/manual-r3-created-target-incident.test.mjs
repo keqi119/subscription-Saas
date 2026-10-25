@@ -271,6 +271,17 @@ test("created-target pure assessor accepts the exact succeeded creation and pres
   });
 });
 
+test("created-target historical assessor still rejects a forward slot regardless of its claimed session", () => {
+  const input = graphFixture();
+  const value = { sessionId: "2c1670f1-764a-4bf2-803b-a3f56b01b9de", pid: 1234 };
+  input.retainedLocks.push({
+    name: input.policy.lockNames[0],
+    value,
+    bytes: encodeManualJson(value)
+  });
+  assert.throws(() => incident.assessCreatedTargetR3IncidentGraph(input), failed);
+});
+
 test("native incident shape accepts only the fixed creation pair and pure results cannot brand", () => {
   const { policy, graph, consumptions } = graphFixture();
   assert.doesNotThrow(() => incident.assertR3IncidentSessionShape(policy, graph));

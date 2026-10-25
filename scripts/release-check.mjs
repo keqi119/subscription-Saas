@@ -4,6 +4,7 @@ const runReleaseScenarios = process.env.RUN_RELEASE_SCENARIOS === "1";
 const runReleaseSmoke = process.env.RUN_RELEASE_SMOKE === "1";
 
 const requiredSteps = [
+  ["R3 active-session historical verification", "pnpm", ["release:history:test"]],
   ["Prisma validate", "pnpm", ["prisma:validate"]],
   ["Prisma generate", "pnpm", ["prisma:generate"]],
   [

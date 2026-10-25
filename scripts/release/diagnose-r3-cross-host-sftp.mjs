@@ -16,6 +16,7 @@ const ADAPTER_SHA = 'b9ae9f996426e13392afc47039e4b4a1061d7d409ba5703048304d565f8
 const ADAPTER = new URL('./r3-hosted-evidence-delivery.mjs', import.meta.url);
 const CODEC = new URL('./r3-evidence-delivery.mjs', import.meta.url);
 const KEY_INPUT = new URL('./r3-operation-inputs.mjs', import.meta.url);
+const CANONICAL = new URL('../../packages/release-foundation/src/canonical-json.mjs', import.meta.url);
 const PAYLOAD = Buffer.from('{"kind":"synthetic-r3-sftp-creation","schemaVersion":"stage1-r3-sftp-diagnostic.v1"}');
 const PAYLOAD_DIGEST = 'sha256:48bc8e7706de7e7eda14ce0ba5350385dfd61c78397affe866da2f913f36e164';
 const OUTPUT = path.resolve('.release-output/r3-cross-host-sftp-diagnostic');
@@ -25,7 +26,8 @@ const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}
 const iso = date => new Date(date).toISOString().replace(/\.\d{3}Z$/u, '.000Z');
 const safeError = error => {
   const code = typeof error?.code === 'string' ? error.code : '';
-  return ['R3_HOSTED_EVIDENCE_DELIVERY_UNAVAILABLE','ENOENT','EEXIST','EACCES','EPERM','ETIMEDOUT'].includes(code)
+  return ['R3_HOSTED_EVIDENCE_DELIVERY_UNAVAILABLE','ERR_MODULE_NOT_FOUND',
+    'UNEXPECTED_CODEC_CALL','ENOENT','EEXIST','EACCES','EPERM','ETIMEDOUT'].includes(code)
     ? code : 'OTHER';
 };
 const sftpCategory = chunk => {
@@ -129,14 +131,10 @@ async function prepare(ctx) {
 }
 
 async function worker(ctx) {
-  const { mock } = await import('node:test');
   const f = files(ctx);
-  const descriptor = await readJson(f.publicDescriptor);
   const input = Buffer.from('{"synthetic":"scope"}');
-  const scope = { operationRef: '00000000-0000-4000-8000-000000000001', expiresAt: descriptor.expiresAt };
-  const codec = await import(CODEC.href);
   const emit = (stage, facts = {}) => process.send?.({ type: 'EVENT', stage, at: new Date().toISOString(), ...facts });
-  let delivery, primary = null;
+  let delivery, primary = null, mock, phase = 'BOOTSTRAP';
   const realSpawn = childProcess.spawn.bind(childProcess);
   const realLstat = fs.lstat.bind(fs);
   const realOpen = fs.open.bind(fs);
@@ -148,8 +146,24 @@ async function worker(ctx) {
     return 'OTHER';
   };
   try {
+    emit('BOOTSTRAP_START');
+    ({ mock } = await import('node:test'));
+    const descriptor = await readJson(f.publicDescriptor);
+    const scope = { operationRef: '00000000-0000-4000-8000-000000000001', expiresAt: descriptor.expiresAt };
+    const unexpectedCodecCall = () => {
+      throw Object.assign(new Error('UNEXPECTED_CODEC_CALL'), { code: 'UNEXPECTED_CODEC_CALL' });
+    };
     await checkAdapter();
-    mock.module(CODEC.href, { namedExports: { ...codec, r3EvidenceScope: () => scope } });
+    mock.module(CODEC.href, { namedExports: {
+      r3EvidenceScope: () => scope,
+      decodeR3CleanupRequest: unexpectedCodecCall,
+      decodeR3CleanupImported: unexpectedCodecCall,
+      decodeR3Closed: unexpectedCodecCall,
+      encodeR3ClosedReceived: unexpectedCodecCall
+    }});
+    mock.module(CANONICAL.href, { namedExports: {
+      canonicalJson: unexpectedCodecCall
+    }});
     mock.module(KEY_INPUT.href, { namedExports: {
       readR3HostedOperationKey: async ({ operationRef }) => {
         assert.equal(operationRef, scope.operationRef);
@@ -221,6 +235,7 @@ async function worker(ctx) {
       }));
       return child;
     });
+    phase = 'OPEN';
     emit('OPEN_START');
     const { openR3HostedEvidenceDelivery } = await import(`${ADAPTER.href}?cross-host-diagnostic=${ctx.runId}`);
     delivery = await openR3HostedEvidenceDelivery({ creationSpecBytes: input, jobAdmissionBytes: input });
@@ -239,13 +254,13 @@ async function worker(ctx) {
     emit('CLOSED');
   } catch (error) {
     primary = error;
-    emit('FAILED', { category: safeError(error) });
+    emit(phase === 'BOOTSTRAP' ? 'BOOTSTRAP_FAILED' : 'FAILED', { category: safeError(error) });
   } finally {
     if (delivery) {
       try { await delivery.close(); emit('CLOSE_AFTER_FAILURE', { category: 'PASS' }); }
       catch (error) { emit('CLOSE_AFTER_FAILURE', { category: safeError(error) }); }
     }
-    mock.restoreAll();
+    mock?.restoreAll();
   }
   if (primary) process.exitCode = 1;
 }

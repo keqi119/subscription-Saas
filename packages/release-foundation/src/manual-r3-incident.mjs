@@ -368,6 +368,70 @@ export const APPROVED_R3_INCIDENT_B7A1429C = freeze({
   executeNotAfter: "2026-10-15T04:00:00.000Z"
 });
 
+// One consumed 94d sourceFresh failure. Its two original locks remain exact;
+// the execution and session records remain INTERRUPTED_UNKNOWN.
+export const APPROVED_R3_INCIDENT_94D22196 = freeze({
+  proposalDigest: "sha256:918975c2a87b15f99f7a54118550c467fb2c4d1139a3c068eb58c187708f6823",
+  approvalDigest: "sha256:4beda2eb50b447ae3589ae83699a11de019bdc39baced5fffb058e2b68c45b02",
+  profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
+  ownerId: "keqi119",
+  operationRef: "94d22196-f4a6-4f24-a73b-ad825117b7fd",
+  sessionId: "a53ee71d-69ed-44a0-a3a9-48defbf99542",
+  openingDigest: "sha256:a2172f9c83207761d2f9c05117af2a0dd75d80ce756eb0d2fca2ab2954436733",
+  allocationDigest: "sha256:d920ee36d0cbca2c7ff111f0c6e2fdb7fcb6c938cd321d488e72ae1d84ad65ea",
+  requestDigest: "sha256:6570d21e7213288f60dd4b03f2b41ab3600fa72ca1148975a16adfb93738e820",
+  authorizationDigest: "sha256:4d294dcf9dddb59651336943949569d14c8cfcc471526b7827ef37f29916e827",
+  consumptionDigest: "sha256:9dfa37d965328c3843ee036d6e3884100a00e75ceb4f21a16d453f810054dea6",
+  executionDigest: "sha256:6af1bd0d8b2f3ef245e6ffb7c175676eda78312437ea8720a872159a8756d079",
+  sessionDigest: "sha256:2756a80ab8f100b386cfec60168a9419db6efcdd578540163c6f7a6a06e04e99",
+  consumptionSlotName:
+    "49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541-1f61f675-3634-40f5-83e9-2b7050816d26.json",
+  lockDigest: "sha256:ec7fab2c9c917870d9fac3d04543d95988790e4b5f08d8bc1c76790a4a5207fc",
+  lockNames: [
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json",
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json"
+  ],
+  lockIdentities: {
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json": {
+      dev: "64512",
+      ino: "5136",
+      uid: "0",
+      gid: "0",
+      mode: "33152",
+      nlink: "1",
+      size: "714"
+    },
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json": {
+      dev: "64512",
+      ino: "5135",
+      uid: "0",
+      gid: "0",
+      mode: "33152",
+      nlink: "1",
+      size: "714"
+    }
+  },
+  lockScope: {
+    targetPolicyDigest: "sha256:fb9707e26b2ad5e00d4cd61d88e6835b0aeb3210d01e9c6fbbfb9bc4a47cb8d5",
+    creationSpecDigest: "sha256:4be54140c96bf94ae931016c7034ed327ead32bdbdc5740ae4d42d04f0b226a2",
+    jobAdmissionDigest: "sha256:29fd70977cbd1d9446c84138c06e53e7725189a982034e001b57d703a3faa7f1",
+    buildProofDigest: "sha256:1fc64dbdca66340861d7991026265bf1333f1d45834492c1b5035b4e80663f7a",
+    sourceSha: "471796a3be1fd0eda3f3be2f1364574e90b5ca96",
+    phase: "source",
+    chain: "fresh"
+  },
+  github: {
+    repository: "keqi119/subscription-Saas",
+    runId: "40219494138",
+    runAttempt: 1,
+    jobId: "121248841818",
+    status: "completed",
+    conclusion: "failure",
+    completedAt: "2026-10-25T18:20:28Z"
+  },
+  executeNotAfter: "2026-10-26T10:00:00.000Z"
+});
+
 // One exact created-target incident; no general multi-execution allowance.
 export const APPROVED_R3_INCIDENT_728EAFD7 = freeze({
   allocationDigest: "sha256:556e06f70f446af748b2252e40beae3b7bf0e65cbd208893e1adc52f4cdf33d1",
@@ -532,6 +596,17 @@ const APPROVED_R3_HISTORICAL_SOURCE_B7A1429C = freeze({
   sourceRoot: "/opt/stage1-r3-candidate-1c8ecfd"
 });
 
+const APPROVED_R3_HISTORICAL_SOURCE_94D22196 = freeze({
+  operationRef: APPROVED_R3_INCIDENT_94D22196.operationRef,
+  profileDigest: APPROVED_R3_INCIDENT_94D22196.profileDigest,
+  sourceSha: APPROVED_R3_INCIDENT_94D22196.lockScope.sourceSha,
+  proofRawDigest: APPROVED_R3_INCIDENT_94D22196.lockScope.buildProofDigest,
+  materialRawDigest: "sha256:4b82c04459d070cb11e34704a55114cd6c792eb39177990f6773680683bc9a84",
+  creationSpecDigest: APPROVED_R3_INCIDENT_94D22196.lockScope.creationSpecDigest,
+  jobAdmissionDigest: APPROVED_R3_INCIDENT_94D22196.lockScope.jobAdmissionDigest,
+  sourceRoot: "/opt/stage1-r3-candidate-471796a3"
+});
+
 const APPROVED_R3_HISTORICAL_SOURCE_728EAFD7 = freeze({
   operationRef: "728eafd7-f137-4d7f-a0ad-73b2a687e59b",
   profileDigest: "sha256:49df6dae67aa386086f207e79e8c221ec61e466b9a19c2422d77878f621fd541",
@@ -578,6 +653,10 @@ const APPROVED_R3_HISTORICAL_CATALOGS = freeze([
     "sha256:0c5ba9cace38336b6ffb80c4d4d9e9de6a6ca71c91129f5a7a6a2205fca60280"
   ],
   [
+    APPROVED_R3_HISTORICAL_SOURCE_94D22196,
+    "sha256:c34beff7b479440cc4390d679fb9073a854b2543f959ac64b4c5174f68823d3b"
+  ],
+  [
     APPROVED_R3_HISTORICAL_SOURCE_728EAFD7,
     "sha256:c34beff7b479440cc4390d679fb9073a854b2543f959ac64b4c5174f68823d3b"
   ]
@@ -617,6 +696,7 @@ export function approvedR3HistoricalSourceBinding(input) {
     APPROVED_R3_HISTORICAL_SOURCE_C820B449,
     APPROVED_R3_HISTORICAL_SOURCE_7E2DF1BA,
     APPROVED_R3_HISTORICAL_SOURCE_B7A1429C,
+    APPROVED_R3_HISTORICAL_SOURCE_94D22196,
     APPROVED_R3_HISTORICAL_SOURCE_728EAFD7
   ])
     if (Object.entries(input).every(([key, value]) => binding[key] === value))
@@ -1102,6 +1182,7 @@ export async function readApprovedR3IncidentDisposition(
     APPROVED_R3_INCIDENT_C820B449,
     APPROVED_R3_INCIDENT_7E2DF1BA,
     APPROVED_R3_INCIDENT_B7A1429C,
+    APPROVED_R3_INCIDENT_94D22196,
     APPROVED_R3_INCIDENT_728EAFD7
   ];
   const matched = policies.filter(
@@ -1148,7 +1229,8 @@ export async function readApprovedR3IncidentDisposition(
       (p === APPROVED_R3_INCIDENT_EB5A1850 ||
         p === APPROVED_R3_INCIDENT_C820B449 ||
         p === APPROVED_R3_INCIDENT_7E2DF1BA ||
-        p === APPROVED_R3_INCIDENT_B7A1429C)
+        p === APPROVED_R3_INCIDENT_B7A1429C ||
+        p === APPROVED_R3_INCIDENT_94D22196)
     )
       originals.push([p.allocationDigest, "archive"], [p.authorizationDigest, "archive"]);
     if (created || originals.some(([digest]) => digest === p.allocationDigest)) {

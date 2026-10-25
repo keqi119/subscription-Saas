@@ -121,8 +121,18 @@ async function withDeliveryFixture(firstDownloadError, run) {
               }
       }
     });
-    mock.method(childProcess, "spawn", (file) => {
+    mock.method(childProcess, "spawn", (file, args) => {
       assert.equal(file, "/usr/bin/sftp");
+      assert.equal(
+        args.filter((arg) => arg.startsWith("-oServerAliveInterval=")).join(),
+        "-oServerAliveInterval=60"
+      );
+      assert.equal(
+        args.filter((arg) => arg.startsWith("-oServerAliveCountMax=")).join(),
+        "-oServerAliveCountMax=3"
+      );
+      assert.equal(args.at(-1), "stage1-r3-evidence@139.196.227.195");
+      assert(args.includes("-oIdentityFile=/dev/shm/stage1-keys/test/forwarding.key"));
       inheritedMask = process.umask();
       const child = new EventEmitter();
       child.stdout = new EventEmitter();

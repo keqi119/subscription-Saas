@@ -4773,10 +4773,24 @@ export async function openManualSession({
           capture,
           stamp
         );
+        // Forward slots have global names reused by every live session. They
+        // are not retained incident locks. Exclude only our exact held bytes
+        // from the historical view; the full capture still rechecks them.
+        const liveLockNames = [lockPath, observerLockPath].map((file) => path.basename(file));
+        for (const name of liveLockNames) {
+          const held = environment.retainedLocks.filter((entry) => entry.name === name);
+          requireThat(held.length === 1 && held[0].bytes.equals(lockBytes), SESSION);
+        }
+        const historicalEnvironment = {
+          ...environment,
+          retainedLocks: environment.retainedLocks.filter(
+            ({ name }) => !liveLockNames.includes(name)
+          )
+        };
         for (const [digest, consumptions] of groups) {
           if (digest === live.sessionRecordDigest) continue;
           const old = await readCompletedR3Context(
-            environment,
+            historicalEnvironment,
             graph,
             slots,
             digest,

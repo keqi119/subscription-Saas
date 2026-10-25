@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test, { mock } from "node:test";
+import test from "node:test";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { encodeManualJson } from "../src/manual-stage1-contracts.mjs";
 import { sha256Bytes, sha256Canonical } from "../src/digest.mjs";
 import { openManualSession } from "../src/manual-stage1-session.mjs";
 import * as manualSessions from "../src/manual-stage1-session.mjs";
+import * as nativeR3Incidents from "../src/manual-r3-incident.mjs";
 import { deterministicPlanDigest } from "../src/proof-builders.mjs";
 import { assessManualRunnerEvidence } from "../src/manual-runner-evidence.mjs";
 import { validateContract } from "../src/schema-registry.mjs";
@@ -3934,12 +3935,16 @@ test("R3 creation UNKNOWN blocks a new operation and slot reacquisition", async 
   await assert.rejects(r3CreationSession(t, f), { code: "MANUAL_SESSION_UNVERIFIED" });
 });
 
-for (const changedHistory of ["unchanged", "held-input", "revocation"])
+for (const changedHistory of [
+  "unchanged",
+  "held-input",
+  "revocation",
+  "active-lock-replaced",
+  "active-lock-missing"
+])
   test(
     `approved failed R3 history reuses authentication and checks ${changedHistory} before consumption`,
-    {
-      skip: typeof mock.module !== "function"
-    },
+    { concurrency: false },
     async (t) => {
       const f = await fixture(t, { profileVersion: "v2" });
       const repoRoot = path.join(f.root, "repository");
@@ -3985,13 +3990,38 @@ for (const changedHistory of ["unchanged", "held-input", "revocation"])
       );
       const oldConsumption = (await f.records("consumption"))[0];
       const oldExecution = (await f.records("execution"))[0];
+      const activeSlotNames = [
+        "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json",
+        "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json"
+      ];
+      const retainedName = "c".repeat(64) + ".json";
+      const retainedBytes = encodeManualJson({ sessionId: uuid(799), retained: true });
+      let checkLiveBoundary = false;
+      let liveBoundaryChecks = 0;
       // The native incident reader/retirer has its own signature and inode tests.
       // This boundary test supplies its completed classification only, to ensure
       // history never turns that classification into an H2 authentication bypass.
       const accepted = Object.freeze({ status: "OWNER_ACCEPTED_UNRESOLVED_FAILURE" });
       t.mock.module("../src/manual-r3-incident.mjs", {
         namedExports: {
-          readApprovedR3IncidentDisposition: async () => accepted,
+          ...nativeR3Incidents,
+          readApprovedR3IncidentDisposition: async (environment) => {
+            if (checkLiveBoundary) {
+              liveBoundaryChecks++;
+              assert.deepEqual(
+                environment.retainedLocks.map(({ name }) => name),
+                [retainedName]
+              );
+              assert.deepEqual(environment.retainedLocks[0].bytes, retainedBytes);
+              for (const name of activeSlotNames) {
+                const file = path.join(f.profile.storage.journalRoot, "locks", name);
+                const bytes = await environment.store.read(file);
+                assert.deepEqual(bytes, await fs.readFile(file));
+                assert.notEqual(JSON.parse(bytes).sessionId, oldConsumption.sessionId);
+              }
+            }
+            return accepted;
+          },
           matchesR3IncidentDisposition: (receipt, consumed, execution) =>
             receipt === accepted &&
             sha256Canonical(consumed) === sha256Canonical(oldConsumption) &&
@@ -4048,6 +4078,7 @@ for (const changedHistory of ["unchanged", "held-input", "revocation"])
       const lockDir = path.join(f.profile.storage.journalRoot, "locks");
       for (const name of await fs.readdir(lockDir))
         await fs.rename(path.join(lockDir, name), path.join(f.root, name));
+      await fs.writeFile(path.join(lockDir, retainedName), retainedBytes, { mode: 0o600 });
       const next = JSON.parse(
         JSON.stringify(context)
           .replaceAll(uuid(701), uuid(702))
@@ -4077,6 +4108,28 @@ for (const changedHistory of ["unchanged", "held-input", "revocation"])
       t.after(() => session.close().catch(() => {}));
       f.r3OperationId = uuid(702);
       const nextRequest = await r3CreationRequest(f, session);
+      if (changedHistory.startsWith("active-lock-")) {
+        const readdir = f.io.fs.readdir;
+        let changed = false;
+        f.io.fs.readdir = async (dir, ...args) => {
+          // Change only after active() checked the live handles, when history
+          // captures the directory. The history view must check its own bytes.
+          if (!changed && dir === lockDir) {
+            changed = true;
+            const file = path.join(lockDir, activeSlotNames[0]);
+            if (changedHistory === "active-lock-missing") await fs.unlink(file);
+            else
+              await fs.writeFile(file, encodeManualJson({ sessionId: oldConsumption.sessionId }));
+          }
+          return readdir(dir, ...args);
+        };
+        await assert.rejects(session.sign(nextRequest), { code: "MANUAL_SESSION_UNVERIFIED" });
+        assert.equal(changed, true);
+        assert.equal(authenticated, 0);
+        assert.equal((await f.records("consumption")).length, 1);
+        return;
+      }
+      checkLiveBoundary = true;
       await assert.rejects(session.sign(nextRequest), { code: "H1_INPUT_UNAVAILABLE" });
       assert.equal(authenticated, 1);
       rejectHostedIdentity = false;
@@ -4086,6 +4139,8 @@ for (const changedHistory of ["unchanged", "held-input", "revocation"])
       assert.equal(rechecked, 2, "every reuse rechecks the live historical owner");
       assert.equal(closedInputs, 0, "the historical owner stays open within this session");
       assert.equal((await f.records("consumption")).length, 1);
+      assert.equal(liveBoundaryChecks, 3, "every sign validates history while live slots are held");
+      checkLiveBoundary = false;
       const historyInput = {
         profile: f.profile,
         ownerObservation: {
@@ -4104,6 +4159,7 @@ for (const changedHistory of ["unchanged", "held-input", "revocation"])
       await assert.rejects(fresh.readManualR3FinalHistory(historyInput), {
         code: "MANUAL_SESSION_UNVERIFIED"
       });
+      checkLiveBoundary = true;
       if (changedHistory === "unchanged")
         await session.consume({ authorization: signedNext, request: nextRequest });
       else {
@@ -4119,6 +4175,7 @@ for (const changedHistory of ["unchanged", "held-input", "revocation"])
       assert.equal(authenticated, 2, "consume does not repeat immutable authentication");
       assert.equal(rechecked, 3, "consume refreshes the retained historical owner");
       assert.equal((await f.records("consumption")).length, changedHistory === "unchanged" ? 2 : 1);
+      checkLiveBoundary = false;
       await session.close();
       assert.equal(closedInputs, 1, "the session releases its historical owner exactly once");
       f.r3OperationId = uuid(701);

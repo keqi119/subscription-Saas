@@ -5,7 +5,7 @@
   "type": "module",
   "exports": "./src/index.mjs",
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --experimental-test-module-mocks --test test/*.test.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0",

@@ -154,6 +154,8 @@ function startSftp(keyPath) {
         "-oPasswordAuthentication=no",
         "-oKbdInteractiveAuthentication=no",
         "-oPreferredAuthentications=publickey",
+        "-oServerAliveInterval=60",
+        "-oServerAliveCountMax=3",
         "-oConnectTimeout=10",
         "-oNumberOfPasswordPrompts=0",
         "-oControlMaster=no",

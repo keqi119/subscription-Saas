@@ -6,6 +6,101 @@ import { sha256Bytes, sha256Canonical } from "../src/digest.mjs";
 import { assessR3IncidentRecords } from "../src/manual-r3-incident.mjs";
 import * as incident from "../src/manual-r3-incident.mjs";
 
+test("94d incident binds only the consumed 471 sourceFresh failure", () => {
+  const p = incident.APPROVED_R3_INCIDENT_94D22196;
+  assert.equal(p.operationRef, "94d22196-f4a6-4f24-a73b-ad825117b7fd");
+  assert.equal(p.github.runId, "40219494138");
+  assert.equal(p.github.jobId, "121248841818");
+  assert.equal(p.github.conclusion, "failure");
+  assert.equal(
+    p.proposalDigest,
+    "sha256:918975c2a87b15f99f7a54118550c467fb2c4d1139a3c068eb58c187708f6823"
+  );
+  assert.equal(
+    p.approvalDigest,
+    "sha256:4beda2eb50b447ae3589ae83699a11de019bdc39baced5fffb058e2b68c45b02"
+  );
+  assert.equal(p.lockScope.sourceSha, "471796a3be1fd0eda3f3be2f1364574e90b5ca96");
+  assert.equal(
+    p.openingDigest,
+    "sha256:a2172f9c83207761d2f9c05117af2a0dd75d80ce756eb0d2fca2ab2954436733"
+  );
+  assert.equal(
+    p.allocationDigest,
+    "sha256:d920ee36d0cbca2c7ff111f0c6e2fdb7fcb6c938cd321d488e72ae1d84ad65ea"
+  );
+  assert.equal(
+    p.requestDigest,
+    "sha256:6570d21e7213288f60dd4b03f2b41ab3600fa72ca1148975a16adfb93738e820"
+  );
+  assert.equal(
+    p.authorizationDigest,
+    "sha256:4d294dcf9dddb59651336943949569d14c8cfcc471526b7827ef37f29916e827"
+  );
+  assert.equal(
+    p.consumptionDigest,
+    "sha256:9dfa37d965328c3843ee036d6e3884100a00e75ceb4f21a16d453f810054dea6"
+  );
+  assert.equal(
+    p.executionDigest,
+    "sha256:6af1bd0d8b2f3ef245e6ffb7c175676eda78312437ea8720a872159a8756d079"
+  );
+  assert.equal(
+    p.sessionDigest,
+    "sha256:2756a80ab8f100b386cfec60168a9419db6efcdd578540163c6f7a6a06e04e99"
+  );
+  assert.equal(
+    p.lockDigest,
+    "sha256:ec7fab2c9c917870d9fac3d04543d95988790e4b5f08d8bc1c76790a4a5207fc"
+  );
+  assert.deepEqual(p.lockNames, [
+    "13d8b7b5c1aaf60b6b2a5b36f861b0dda7df2b80f8feb3013120d190f332130b.json",
+    "a52de7e6885d8285e8b9fea11dc44012a5e465c55f18701a176bef30b865386b.json"
+  ]);
+  assert.equal(p.lockIdentities[p.lockNames[0]].ino, "5136");
+  assert.equal(p.lockIdentities[p.lockNames[1]].ino, "5135");
+  const binding = {
+    operationRef: p.operationRef,
+    profileDigest: p.profileDigest,
+    sourceSha: p.lockScope.sourceSha,
+    proofRawDigest: p.lockScope.buildProofDigest,
+    materialRawDigest: "sha256:4b82c04459d070cb11e34704a55114cd6c792eb39177990f6773680683bc9a84",
+    creationSpecDigest: p.lockScope.creationSpecDigest,
+    jobAdmissionDigest: p.lockScope.jobAdmissionDigest
+  };
+  assert.deepEqual(incident.approvedR3HistoricalContractCompatibility(binding), {
+    sourceRoot: "/opt/stage1-r3-candidate-471796a3",
+    sourceSha: p.lockScope.sourceSha,
+    catalogRawDigest: "sha256:c34beff7b479440cc4390d679fb9073a854b2543f959ac64b4c5174f68823d3b",
+    discoveryVersion: "r3-historical-entrypoints-literal.v1"
+  });
+  for (const key of Object.keys(binding))
+    assert.equal(
+      incident.approvedR3HistoricalContractCompatibility({ ...binding, [key]: "tampered" }),
+      null,
+      key
+    );
+});
+
+test("94d native reader recognizes only its exact consumption and fails closed without originals", async () => {
+  const p = incident.APPROVED_R3_INCIDENT_94D22196;
+  const graph = new Map([
+    [p.openingDigest, { value: { kind: "session", sessionId: p.sessionId } }]
+  ]);
+  await assert.rejects(
+    incident.readApprovedR3IncidentDisposition({}, graph, p.openingDigest, [
+      { operationId: p.operationRef }
+    ]),
+    { code: "MANUAL_R3_INCIDENT_UNVERIFIED" }
+  );
+  assert.equal(
+    await incident.readApprovedR3IncidentDisposition({}, new Map(), p.openingDigest, [
+      { operationId: "00000000-0000-4000-8000-000000000000" }
+    ]),
+    null
+  );
+});
+
 function fixture() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const profile = {

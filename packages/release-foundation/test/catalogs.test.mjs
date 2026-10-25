@@ -15,6 +15,7 @@ import * as historicalCatalogs from "../src/catalogs.mjs";
 import { sha256Bytes } from "../src/digest.mjs";
 import {
   APPROVED_R3_INCIDENT_B7A1429C,
+  APPROVED_R3_INCIDENT_94D22196,
   approvedR3HistoricalContractCompatibility
 } from "../src/manual-r3-incident.mjs";
 
@@ -67,6 +68,46 @@ test("migration catalog is path ordered and content addressed", async () => {
     );
     assert.match(catalog.digest, /^sha256:[0-9a-f]{64}$/);
     assert.ok(catalog.entries.every((entry) => /^sha256:[0-9a-f]{64}$/.test(entry.sha256)));
+  });
+});
+
+test("471 incident historical compatibility authenticates the fixed source catalog", async () => {
+  const bytes = await readFile(new URL("./fixtures/r3-catalogs-233d237.mjs.txt", import.meta.url));
+  const p = APPROVED_R3_INCIDENT_94D22196;
+  const compatibility = approvedR3HistoricalContractCompatibility({
+    operationRef: p.operationRef,
+    profileDigest: p.profileDigest,
+    sourceSha: p.lockScope.sourceSha,
+    proofRawDigest: p.lockScope.buildProofDigest,
+    materialRawDigest: "sha256:4b82c04459d070cb11e34704a55114cd6c792eb39177990f6773680683bc9a84",
+    creationSpecDigest: p.lockScope.creationSpecDigest,
+    jobAdmissionDigest: p.lockScope.jobAdmissionDigest
+  });
+  assert.equal(sha256Bytes(bytes), compatibility.catalogRawDigest);
+  assert.equal(compatibility.sourceRoot, "/opt/stage1-r3-candidate-471796a3");
+  await withTempRepo(async (root) => {
+    await writeRepositoryContractFixture(root, [
+      "release/contracts/repository-contract-files.v1.json",
+      "release/contracts/schemas/example.json"
+    ]);
+    assert.equal(
+      (
+        await historicalCatalogs.computeHistoricalRepositoryContract(root, {
+          catalogBytes: bytes,
+          catalogRawDigest: compatibility.catalogRawDigest
+        })
+      ).entries.length,
+      2
+    );
+    const changed = Buffer.from(bytes);
+    changed[0] ^= 1;
+    await assert.rejects(
+      historicalCatalogs.computeHistoricalRepositoryContract(root, {
+        catalogBytes: changed,
+        catalogRawDigest: compatibility.catalogRawDigest
+      }),
+      { code: "CONTRACT_HISTORICAL_CATALOG_CHANGED" }
+    );
   });
 });
 

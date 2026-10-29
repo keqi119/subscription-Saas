@@ -1,0 +1,4 @@
+node_modules/
+.artifacts/
+project.private.config.json
+src/config.local.js

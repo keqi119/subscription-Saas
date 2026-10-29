@@ -1,0 +1,54 @@
+<view class="page bottom-space"
+  ><demo-banner /><view wx:if="{{loading}}" class="empty">正在读取详情…</view
+  ><view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="reload">重新加载</button
+    ><button class="text-button" bindtap="openList">返回记录列表</button></view
+  ><view wx:elif="{{!record}}" class="empty"
+    ><view>未找到这条记录</view
+    ><button class="secondary" bindtap="openList">查看记录列表</button></view
+  ><block wx:else
+    ><view class="eyebrow">RECORD DETAIL / 详情</view><view class="title">{{record.title}}</view
+    ><view class="record-summary"
+      ><text class="tag">{{record.statusText}}</text
+      ><view class="muted">{{record.subtitle}}</view></view
+    ><view wx:if="{{record.amountText}}" class="price detail-amount">{{record.amountText}}</view
+    ><view class="card"
+      ><view class="label">记录编号</view><view class="record-id">{{record.id}}</view
+      ><view wx:for="{{record.details}}" wx:key="label" class="detail-row"
+        ><text class="muted">{{item.label}}</text
+        ><text class="detail-value">{{item.value}}</text></view
+      ></view
+    ><view wx:if="{{record.timeline.length}}" class="card"
+      ><view class="section-title">记录进度</view
+      ><view wx:for="{{record.timeline}}" wx:key="title" class="timeline-row"
+        ><view class="timeline-dot {{item.done ? 'done' : ''}}" /><view
+          ><view>{{item.title}}</view><view class="muted">{{item.description}}</view></view
+        ></view
+      ></view
+    ><view wx:if="{{record.documents.length}}" class="card"
+      ><view class="section-title">相关文件 · 示例说明</view
+      ><view wx:for="{{record.documents}}" wx:key="index" class="document"
+        ><view>{{item.title || item.name || item}}</view
+        ><view class="muted"
+          >{{item.description || '本地演示文件说明；正式文件预览需要后台受控下载接口。'}}</view
+        ></view
+      ></view
+    ><view
+      wx:if="{{type === 'bills' || type === 'payments' || type === 'contracts'}}"
+      class="notice"
+      >真实支付与电子签约尚未接入。本地操作不会扣款、完成签署或改变真实账务状态。</view
+    ><view wx:if="{{message}}" class="notice" role="status">{{message}}</view
+    ><view wx:if="{{record.actions.length}}" class="stack"
+      ><button
+        wx:for="{{record.actions}}"
+        wx:key="id"
+        class="secondary"
+        loading="{{busy}}"
+        disabled="{{busy}}"
+        data-action="{{item.id}}"
+        bindtap="act"
+        >{{item.label}}</button
+      ></view
+    ><button class="text-button back-link" bindtap="openList">查看全部记录 →</button></block
+  ></view
+>

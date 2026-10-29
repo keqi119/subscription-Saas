@@ -1,0 +1,91 @@
+<view class="page catalog-page">
+  <demo-banner />
+  <view class="catalog-header"
+    ><view class="eyebrow">FIND YOUR EVERYDAY</view><view class="title">选一台，刚刚好。</view
+    ><view class="muted">上海 · 二手纯电 · 预设订阅套餐</view></view
+  >
+  <view class="search-bar row"
+    ><input
+      class="search-input"
+      placeholder="搜索品牌或车型"
+      value="{{query}}"
+      bindinput="onQuery"
+      bindconfirm="search"
+      confirm-type="search"
+      maxlength="60"
+      aria-label="搜索品牌或车型"
+    /><button class="search-button" bindtap="search">搜索</button></view
+  >
+  <scroll-view class="brand-scroll" scroll-x
+    ><view class="brand-options"
+      ><button
+        class="brand-chip {{!brand ? 'is-selected' : ''}}"
+        bindtap="selectBrand"
+        data-brand=""
+        aria-pressed="{{!brand}}"
+        >全部品牌</button
+      ><button
+        wx:for="{{brands}}"
+        wx:key="*this"
+        class="brand-chip {{brand === item ? 'is-selected' : ''}}"
+        bindtap="selectBrand"
+        data-brand="{{item}}"
+        aria-pressed="{{brand === item}}"
+        >{{item}}</button
+      ></view
+    ></scroll-view
+  >
+  <view wx:if="{{loading}}" class="empty" role="status">正在查找车辆…</view>
+  <view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="refresh">重试</button></view
+  >
+  <block wx:else>
+    <view class="result-summary row between"
+      ><text>{{items.length}} 台车辆{{appliedQuery ? ' · 搜索：' + appliedQuery : ''}}</text
+      ><button wx:if="{{brand || appliedQuery}}" class="text-button" bindtap="clearFilters"
+        >清除筛选</button
+      ></view
+    >
+    <view wx:if="{{!items.length}}" class="empty"
+      ><view class="section-title">还没有匹配的车辆</view
+      ><view class="muted">试试其他品牌或车型名称。</view
+      ><button class="secondary" bindtap="clearFilters">查看全部车辆</button></view
+    >
+    <view
+      wx:for="{{items}}"
+      wx:key="id"
+      class="catalog-card"
+      bindtap="openVehicle"
+      data-id="{{item.id}}"
+      role="button"
+      aria-label="查看{{item.name}}"
+    >
+      <view class="vehicle-photo"
+        ><image wx:if="{{item.imageUrl}}" src="{{item.imageUrl}}" mode="aspectFit" /><view
+          wx:else
+          class="missing-photo"
+          >车辆图片待补充</view
+        ><text class="status-pill {{item.available ? '' : 'unavailable'}}"
+          >{{item.statusText}}</text
+        ></view
+      >
+      <view class="vehicle-body"
+        ><view class="row between"
+          ><view class="vehicle-name">{{item.name}}</view><text class="vehicle-arrow">↗</text></view
+        ><view class="muted vehicle-facts"
+          >{{item.registrationText}} · {{item.mileageText}} · {{item.city}}</view
+        ><view class="vehicle-tagline">{{item.tagline || item.bodyType}}</view
+        ><view class="divider"></view
+        ><view class="row between price-line"
+          ><view
+            ><text class="price">{{item.minFeeText}}</text><text class="muted"> / 月起</text></view
+          ><text class="view-label">查看方案 →</text></view
+        ><view class="price-note">起价对应可售预设套餐，适用期限与权益见详情。</view></view
+      >
+    </view>
+    <view class="catalog-note muted"
+      ><view>可售状态与最终条件以审核确认结果为准。</view
+      ><view>月费包含项目、另计项目与押金均在方案中说明。</view></view
+    >
+  </block>
+</view>

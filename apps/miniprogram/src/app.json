@@ -1,0 +1,61 @@
+{
+  "pages": [
+    "pages/home/index",
+    "pages/catalog/index",
+    "pages/use/index",
+    "pages/mine/index",
+    "pages/vehicle/index",
+    "pages/application/index",
+    "pages/application-detail/index",
+    "pages/records/index",
+    "pages/record/index",
+    "pages/profile/index",
+    "pages/service/index",
+    "pages/mileage/index",
+    "pages/handover/index",
+    "pages/settings/index",
+    "pages/legal/index"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#F4F3EF",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "纯电主义",
+    "backgroundColor": "#F4F3EF",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "color": "#686B65",
+    "selectedColor": "#252723",
+    "backgroundColor": "#F4F3EF",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/home/index",
+        "text": "首页",
+        "iconPath": "assets/home.png",
+        "selectedIconPath": "assets/home-active.png"
+      },
+      {
+        "pagePath": "pages/catalog/index",
+        "text": "选车",
+        "iconPath": "assets/car.png",
+        "selectedIconPath": "assets/car-active.png"
+      },
+      {
+        "pagePath": "pages/use/index",
+        "text": "用车",
+        "iconPath": "assets/key.png",
+        "selectedIconPath": "assets/key-active.png"
+      },
+      {
+        "pagePath": "pages/mine/index",
+        "text": "我的",
+        "iconPath": "assets/person.png",
+        "selectedIconPath": "assets/person-active.png"
+      }
+    ]
+  },
+  "usingComponents": { "demo-banner": "/components/demo-banner/index" },
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

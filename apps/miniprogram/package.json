@@ -1,0 +1,18 @@
+{
+  "name": "@subscription-saas/miniprogram",
+  "version": "0.1.0",
+  "private": true,
+  "description": "汽车订阅原生微信小程序，Mock 前端开发批次",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "node scripts/check.cjs",
+    "compile:templates": "node scripts/compile-templates.cjs",
+    "preview": "node scripts/preview.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "miniprogram-compiler": "0.2.3"
+  }
+}

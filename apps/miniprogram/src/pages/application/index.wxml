@@ -1,0 +1,106 @@
+<view class="page bottom-space application-page">
+  <demo-banner />
+  <view class="application-header"
+    ><view class="eyebrow">SUBSCRIPTION REQUEST</view><view class="title">确认意向，提交审核。</view
+    ><view class="muted">先把需求告诉我们，最终方案在审核后确认。</view></view
+  >
+  <view wx:if="{{loading}}" class="empty" role="status">正在核对意向方案…</view>
+  <view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="refresh">重试</button
+    ><button class="text-button" bindtap="openCatalog">返回选车</button></view
+  >
+  <view wx:elif="{{!vehicle || !plan}}" class="empty"
+    ><view class="section-title">意向方案暂不可用</view
+    ><view class="muted">请返回详情重新选择一个可售套餐。</view
+    ><button class="secondary" bindtap="returnVehicle">重新选择方案</button></view
+  >
+  <block wx:else>
+    <view class="intent-card"
+      ><view class="eyebrow">01 / 你的意向</view><view class="section-title">{{vehicle.name}}</view
+      ><view class="muted">{{plan.title}} · {{plan.termMonths}} 个月</view
+      ><view class="intent-detail row between"
+        ><text class="muted">预估月费</text><text class="price">{{plan.monthlyFeeText}}</text></view
+      ><view class="intent-detail row between"
+        ><text class="muted">包含里程</text><text>{{plan.mileageText}}</text></view
+      ><view class="intent-detail row between"
+        ><text class="muted">申请阶段押金</text><text>待审核确认</text></view
+      ><button class="text-button" bindtap="returnVehicle">查看或调整方案 →</button></view
+    >
+    <view wx:if="{{!vehicle.available || !plan.available}}" class="notice"
+      >当前车辆或套餐不可售，无法提交申请，请重新选择。</view
+    >
+    <view wx:if="{{submittedId}}" class="submitted-card"
+      ><view class="section-title">演示申请已提交审核</view
+      ><view class="muted">还不是正式订单。你可以继续查看审核进度。</view
+      ><button class="primary" bindtap="openSubmitted">查看申请进度</button></view
+    >
+    <view wx:elif="{{context.mode !== 'mock'}}" class="notice"
+      >当前 API 模式仅开放车辆与套餐浏览。客户登录、申请和写入接口尚未接入。<button
+        class="secondary"
+        bindtap="openCatalog"
+        >返回选车</button
+      ></view
+    >
+    <block wx:else>
+      <view class="contact-section"
+        ><view class="eyebrow">02 / 联系方式</view
+        ><view class="section-title">留下演示联系资料</view
+        ><view class="notice"
+          >此流程使用本机演示数据，请勿填写真实敏感信息。不发送短信，不代表后台已受理。</view
+        ><view class="field"
+          ><view class="label">称呼</view
+          ><input
+            class="input"
+            value="{{name}}"
+            placeholder="例如：演示用户"
+            bindinput="onName"
+            maxlength="30"
+            disabled="{{busy}}"
+            aria-label="称呼" /></view
+        ><view class="field"
+          ><view class="label">演示手机号</view
+          ><input
+            class="input"
+            value="{{mobile}}"
+            placeholder="例如：13800000000"
+            type="number"
+            maxlength="11"
+            bindinput="onMobile"
+            disabled="{{busy}}"
+            aria-label="演示手机号" /></view
+      ></view>
+      <view class="review-section"
+        ><view class="eyebrow">03 / 提交前，请确认</view
+        ><view class="review-line"
+          ><text>01</text><view>提交的是意向申请，需经过资料、车辆和套餐审核。</view></view
+        ><view class="review-line"
+          ><text>02</text
+          ><view>月费与押金以审核后的最终方案为准；有变化时需要重新确认。</view></view
+        ><view class="review-line"
+          ><text>03</text
+          ><view>确认最终方案后才进入正式订单、合同、主动支付与交付流程。</view></view
+        ></view
+      >
+      <checkbox-group bindchange="onAccepted"
+        ><label class="acceptance"
+          ><checkbox
+            value="accepted"
+            checked="{{accepted}}"
+            disabled="{{busy}}"
+            color="#B44919"
+          /><text>我已阅读申请说明，知晓这是本地演示申请，并同意提交审核。</text></label
+        ></checkbox-group
+      ><button class="text-button terms-link" bindtap="openTerms">阅读申请说明 →</button>
+      <view wx:if="{{formError}}" class="form-error" role="alert">{{formError}}</view>
+      <view class="sticky-actions"
+        ><button
+          class="primary"
+          loading="{{busy}}"
+          disabled="{{busy || !vehicle.available || !plan.available}}"
+          bindtap="submit"
+          >{{busy ? '正在提交演示申请' : '提交审核（演示）'}}</button
+        ><view class="submit-caption">提交后进入审核，不会扣款或立即生成订单。</view></view
+      >
+    </block>
+  </block>
+</view>

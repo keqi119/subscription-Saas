@@ -1,0 +1,145 @@
+.brand-line {
+  padding: 28rpx 0 36rpx;
+  border-bottom: 1rpx solid #d9d9d1;
+}
+.brand {
+  font-size: 32rpx;
+  font-weight: 650;
+  letter-spacing: 2rpx;
+}
+.city {
+  font-size: 23rpx;
+  color: #696b64;
+}
+.hero {
+  padding: 66rpx 0 56rpx;
+}
+.hero-title {
+  font-size: 86rpx;
+  line-height: 1.18;
+  font-weight: 600;
+  letter-spacing: -4rpx;
+  margin: 28rpx 0;
+}
+.hero-copy {
+  color: #62655c;
+  font-size: 29rpx;
+  line-height: 1.8;
+}
+.hero-button {
+  margin-top: 36rpx;
+  display: flex;
+  justify-content: space-between;
+}
+.hero-caption,
+.price-caption {
+  font-size: 22rpx;
+  color: #74766e;
+  line-height: 1.6;
+  margin-top: 18rpx;
+}
+.next-card {
+  margin-top: 30rpx;
+  padding: 30rpx;
+  background: #e9e9df;
+  border-left: 5rpx solid #b44919;
+}
+.next-card .section-title {
+  margin: 16rpx 0;
+}
+.next-card button {
+  margin-top: 24rpx;
+}
+.section-heading {
+  margin: 20rpx 0;
+}
+.vehicle-preview {
+  border: 1rpx solid #dcdcd4;
+  margin-bottom: 26rpx;
+  background: #fbfaf7;
+}
+.photo-surface {
+  position: relative;
+  height: 260rpx;
+  background: #e9eae3;
+}
+.vehicle-image {
+  width: 100%;
+  height: 100%;
+}
+.missing-photo {
+  padding-top: 100rpx;
+  text-align: center;
+  color: #787b71;
+  font-size: 24rpx;
+}
+.photo-status {
+  position: absolute;
+  top: 20rpx;
+  left: 20rpx;
+  font-size: 21rpx;
+  background: #f6f6f0;
+  padding: 8rpx 14rpx;
+}
+.preview-body {
+  padding: 26rpx;
+}
+.vehicle-name {
+  font-size: 32rpx;
+  font-weight: 600;
+}
+.vehicle-meta {
+  margin: 10rpx 0 22rpx;
+}
+.price-row {
+  align-items: baseline;
+}
+.process {
+  margin-top: 58rpx;
+}
+.process .section-title {
+  margin: 18rpx 0 28rpx;
+}
+.step {
+  display: flex;
+  gap: 24rpx;
+  padding: 23rpx 0;
+  border-top: 1rpx solid #d9d9d1;
+  font-size: 29rpx;
+  line-height: 1.6;
+}
+.step-number {
+  font-size: 23rpx;
+  color: #b44919;
+  font-variant-numeric: tabular-nums;
+  padding-top: 5rpx;
+}
+.step .muted {
+  font-size: 24rpx;
+}
+.faq {
+  border-top: 1rpx solid #d9d9d1;
+  border-bottom: 1rpx solid #d9d9d1;
+  margin-top: 32rpx;
+}
+.faq-trigger {
+  background: transparent;
+  padding: 24rpx 0;
+  text-align: left;
+  font-size: 27rpx;
+  line-height: 1.6;
+  border-radius: 0;
+}
+.faq-trigger::after {
+  border: 0;
+}
+.faq-content {
+  padding: 0 0 28rpx;
+  line-height: 1.8;
+}
+.footer-note {
+  padding: 48rpx 0 20rpx;
+  font-size: 23rpx;
+  color: #777a71;
+  letter-spacing: 3rpx;
+}

@@ -1,0 +1,12 @@
+<view class="page">
+  <demo-banner />
+  <view class="eyebrow">READ BEFORE YOU GO / 说明</view>
+  <view class="title">{{title}}</view>
+  <view class="legal-intro">{{intro}}</view>
+  <view wx:for="{{sections}}" wx:key="title" class="legal-section">
+    <view class="section-title">{{item.title}}</view>
+    <view class="legal-body">{{item.text}}</view>
+  </view>
+  <view class="notice">示例说明 · 非正式法律文件</view>
+  <button class="secondary" bindtap="openSettings">管理本地演示数据</button>
+</view>

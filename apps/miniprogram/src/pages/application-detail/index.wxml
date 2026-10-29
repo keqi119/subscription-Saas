@@ -1,0 +1,119 @@
+<view class="page bottom-space detail-page">
+  <demo-banner />
+  <view wx:if="{{loading}}" class="empty" role="status">正在加载申请进度…</view>
+  <view wx:elif="{{error}}" class="empty"
+    ><view>{{error}}</view><button class="secondary" bindtap="refresh">重新加载</button
+    ><button class="text-button" bindtap="openCatalog">返回选车</button></view
+  >
+  <view wx:elif="{{!application}}" class="empty"
+    ><view class="section-title">还没有这份申请</view
+    ><view class="muted">可以先挑选车辆与预设套餐。</view
+    ><button class="primary" bindtap="openCatalog">去选车</button
+    ><button class="text-button" bindtap="refresh">刷新申请</button></view
+  >
+  <block wx:else>
+    <view class="status-header"
+      ><view class="eyebrow">YOUR APPLICATION</view
+      ><view class="status-symbol"
+        >{{application.status === 'AWAITING_CONFIRMATION' ? '!' : '↗'}}</view
+      ><view class="title">{{application.statusText}}</view
+      ><view class="muted">{{application.title || '订阅申请'}}</view
+      ><view class="application-id">申请编号 {{application.id}}</view></view
+    >
+    <view wx:if="{{actionMessage}}" class="notice action-message" role="status"
+      >{{actionMessage}}</view
+    >
+    <view class="summary-card"
+      ><view class="section-title">申请意向</view
+      ><view class="summary-row row between"
+        ><text class="muted">车辆</text><text>{{application.vehicleName}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">预设套餐</text><text>{{application.planTitle}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">意向月费</text><text>{{application.monthlyFeeText}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">押金</text
+        ><text>{{application.depositText || '待审核确认'}}</text></view
+      ></view
+    >
+    <view class="progress-section"
+      ><view class="section-title">办理进度</view
+      ><view
+        wx:for="{{application.timeline}}"
+        wx:key="title"
+        class="timeline-item {{item.done ? 'done' : ''}}"
+        ><view class="timeline-marker">{{item.done ? '✓' : '·'}}</view
+        ><view class="timeline-copy"
+          ><view class="timeline-title">{{item.title}}</view
+          ><view class="muted">{{item.description}}</view></view
+        ></view
+      ></view
+    >
+    <view wx:if="{{application.finalPlan}}" class="final-plan"
+      ><view class="row between"
+        ><view class="eyebrow">FINAL PLAN</view
+        ><text class="version">版本 {{application.finalPlan.revision}}</text></view
+      ><view class="section-title">最终方案</view
+      ><view class="muted final-caption"
+        >请逐项核对。车辆、价格或方案版本变更后，需要重新阅读并确认。</view
+      ><view class="summary-row row between"
+        ><text class="muted">车辆</text><text>{{application.finalPlan.vehicleName}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">套餐</text><text>{{application.finalPlan.planTitle}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">订阅期限</text
+        ><text>{{application.finalPlan.termMonths}} 个月</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">包含里程</text><text>{{application.finalPlan.mileageText}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">能源说明</text><text>{{application.finalPlan.energyText}}</text></view
+      ><view class="final-benefits"
+        ><view class="muted">包含权益</view
+        ><view wx:for="{{application.finalPlan.benefits}}" wx:key="*this" class="final-benefit"
+          ><text class="benefit-check">✓</text><text>{{item}}</text></view
+        ></view
+      ><view class="final-price row between"
+        ><text>月费</text><text class="price">{{application.finalPlan.monthlyFeeText}}</text></view
+      ><view class="summary-row row between"
+        ><text class="muted">押金</text><text>{{application.finalPlan.depositText}}</text></view
+      ><view class="plan-notes">{{application.finalPlan.notes}}</view
+      ><checkbox-group
+        wx:if="{{application.status === 'AWAITING_CONFIRMATION'}}"
+        bindchange="onPlanRead"
+        ><label class="plan-read"
+          ><checkbox value="read" color="#B44919" checked="{{planRead}}" disabled="{{busy}}" /><text
+            >我已阅读当前版本的车辆、套餐、月费、押金及使用条件。</text
+          ></label
+        ></checkbox-group
+      ></view
+    >
+    <view wx:if="{{actionError}}" class="action-error" role="alert"
+      >{{actionError}}<button class="text-button" bindtap="refresh" disabled="{{busy}}"
+        >重新加载最新方案</button
+      ></view
+    >
+    <view class="notice flow-note"
+      >申请不等于正式订单。只有确认最终方案后才进入订单流程，签约、支付和交付仍需分别完成。</view
+    >
+    <button
+      wx:if="{{application.status === 'SUBMITTED' || application.status === 'AWAITING_CONFIRMATION'}}"
+      class="text-button"
+      bindtap="cancelApplication"
+      disabled="{{busy}}"
+      >取消申请（演示）</button
+    >
+    <view
+      wx:if="{{application.status === 'AWAITING_CONFIRMATION' && application.finalPlan}}"
+      class="sticky-actions"
+      ><button class="primary" bindtap="confirmPlan" loading="{{busy}}" disabled="{{busy}}"
+        >确认最终方案（演示）</button
+      ><button class="text-button" bindtap="rejectPlan" disabled="{{busy}}"
+        >暂不接受此方案</button
+      ></view
+    >
+    <view wx:else class="detail-navigation"
+      ><button class="primary" bindtap="openUse">查看用车与待办</button
+      ><button class="text-button" bindtap="refresh">刷新申请进度</button></view
+    >
+  </block>
+</view>
